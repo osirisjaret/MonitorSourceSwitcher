@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>DisplayId</key>
+    <string>YOUR-DISPLAY-UUID-HERE</string>
+    <key>TypeCSetCode</key>
+    <string>15</string>
+    <key>HdmiSetCode</key>
+    <string>16</string>
+    <key>TypeCReadCode</key>
+    <string>15</string>
+    <key>HdmiReadCode</key>
+    <string>17</string>
+    <key>M1ddcPath</key>
+    <string>/opt/homebrew/bin/m1ddc</string>
+</dict>
+</plist>

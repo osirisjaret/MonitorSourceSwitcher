@@ -1,0 +1,5 @@
+.DS_Store
+MonitorSourceSwitcher
+MonitorSourceSwitcher.app
+build/
+*.o
