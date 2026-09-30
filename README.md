@@ -68,16 +68,6 @@ cp icons/typec.png icons/hdmi.png "$APP/Contents/Resources/" 2>/dev/null
 **前置条件**：
 - Mac Mini 开启「系统设置 → 通用 → 共享 → 远程登录」
 - MacBook 与 Mac Mini 在同一局域网
-- 配置 SSH 免密登录：
-  ```bash
-  # MacBook 上生成密钥（如已有可跳过）
-  ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
-  # 把公钥加到 Mac Mini
-  ssh-copy-id user@192.168.x.x
-  # 或手动在 Mac Mini 上执行：
-  mkdir -p ~/.ssh && echo "<公钥内容>" >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-  ```
-- 确保 Mac Mini 的 home 目录权限不是 777（SSH 安全要求）：`chmod 755 ~`
 
 ## License
 
