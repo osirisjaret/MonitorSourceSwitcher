@@ -47,7 +47,7 @@ struct AppConfig {
 }
 
 // ===== AppDelegate =====
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
     private let cfg = AppConfig.load()
@@ -58,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var loadingTimer: Timer?
     private var frameIdx = 0
     private let loadingFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    // SSH 设置界面控件引用
+    private weak var sshAlert: NSAlert?
+    private weak var sshToggle: NSSwitch?
+    private weak var sshAddrField: NSTextField?
+    private weak var sshPwdField: NSSecureTextField?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 菜单项
@@ -68,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let detectItem = NSMenuItem(title: "检测显示器信息", action: #selector(detectDisplays), keyEquivalent: "")
         detectItem.target = self
         menu.addItem(detectItem)
+        let sshItem = NSMenuItem(title: "SSH 协调设置", action: #selector(sshSettings), keyEquivalent: "")
+        sshItem.target = self
+        menu.addItem(sshItem)
         let aboutItem = NSMenuItem(title: "关于", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
@@ -116,6 +124,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isSwitching else { return }
         isSwitching = true
         startLoading()
+        // 超时保护：12 秒后强制结束 loading，防止 SSH/切换异常导致永远卡住
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            guard let self = self, self.isSwitching else { return }
+            self.isSwitching = false
+            self.stopLoading()
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let current = self.getCurrentInput()
@@ -132,9 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 targetRead = self.cfg.hdmiReadCode
             }
             // 切到 HDMI 前，先唤醒 Mac Mini 的显示输出（解决问题1：Mac Mini 睡了切不过去）
+            // 用 nohup 后台运行，避免 caffeinate -t N 阻塞 SSH 导致切换卡住
             if target == self.cfg.hdmiSetCode {
-                _ = self.sshMacMiniSync("caffeinate -u -t \(self.cfg.wakeDuration)")
-                Thread.sleep(forTimeInterval: 0.5)  // 给 Mac Mini 一点时间恢复视频输出
+                _ = self.sshMacMiniSync("nohup caffeinate -u -t \(self.cfg.wakeDuration) >/dev/null 2>&1 &")
+                Thread.sleep(forTimeInterval: 0.8)  // 给 Mac Mini 一点时间恢复视频输出
             }
             self.setInput(target)
             Thread.sleep(forTimeInterval: 2.0)
@@ -277,6 +292,249 @@ By Jaret
 """
         alert.alertStyle = .informational
         alert.runModal()
+    }
+
+    // MARK: - SSH 协调设置（开关式交互：开关→输入框→保存按钮逐级启用）
+    @objc func sshSettings() {
+        let alert = NSAlert()
+        alert.messageText = "SSH 协调设置"
+        // 已配置则脱敏提示，不暴露完整地址
+        let infoText: String
+        if cfg.macMiniSSH.isEmpty {
+            infoText = "开启后可协调两台 Mac 的显示器休眠状态。\n需在 Mac Mini 开启「系统设置 → 通用 → 共享 → 远程登录」。"
+        } else {
+            infoText = "当前已配置：\(maskedAddress(cfg.macMiniSSH))\n开启后可协调两台 Mac 的显示器休眠状态。\n需在 Mac Mini 开启「系统设置 → 通用 → 共享 → 远程登录」。"
+        }
+        alert.informativeText = infoText
+
+        // accessoryView：文字+开关整体靠右，地址+密码输入框在下方
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
+
+        // 开关行：文字在前，开关在后，整体靠右对齐
+        let toggleLabel = NSTextField(labelWithString: "开启 SSH 协调")
+        toggleLabel.frame = NSRect(x: 158, y: 76, width: 100, height: 18)
+        toggleLabel.font = NSFont.systemFont(ofSize: 13)
+        toggleLabel.alignment = .right
+
+        let toggle = NSSwitch(frame: NSRect(x: 262, y: 74, width: 40, height: 24))
+        toggle.state = cfg.macMiniSSH.isEmpty ? .off : .on
+        toggle.target = self
+        toggle.action = #selector(sshToggleChanged(_:))
+
+        // 地址 + 密码输入框
+        let addrField = NSTextField(frame: NSRect(x: 0, y: 42, width: 300, height: 24))
+        addrField.placeholderString = "用户名@IP地址"
+        addrField.delegate = self
+
+        let pwdField = NSSecureTextField(frame: NSRect(x: 0, y: 10, width: 300, height: 24))
+        pwdField.placeholderString = "Mac Mini 登录密码（仅首次配置需要）"
+
+        accessory.addSubview(toggleLabel)
+        accessory.addSubview(toggle)
+        accessory.addSubview(addrField)
+        accessory.addSubview(pwdField)
+        alert.accessoryView = accessory
+
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+
+        sshAlert = alert
+        sshToggle = toggle
+        sshAddrField = addrField
+        sshPwdField = pwdField
+        updateSSHUI()
+
+        let response = alert.runModal()
+
+        sshAlert = nil
+        sshToggle = nil
+        sshAddrField = nil
+        sshPwdField = nil
+
+        guard response == .alertFirstButtonReturn else { return }
+
+        let enabled = toggle.state == .on
+        let addr = addrField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pwd = pwdField.stringValue
+
+        if !enabled {
+            // 关闭协调
+            saveMacMiniSSH("")
+            simpleAlert("已关闭 SSH 协调", "MacBook 休眠时不再通知 Mac Mini，切换 HDMI 时也不再自动唤醒。")
+            return
+        }
+
+        if addr.isEmpty { return }
+
+        // 后台自动配置免密登录
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            guard let pubKey = self.ensureSSHKey() else {
+                DispatchQueue.main.async {
+                    self.simpleAlert("配置失败", "无法生成 SSH 密钥，请检查 ~/.ssh 目录权限。")
+                }
+                return
+            }
+
+            // 密码为空：已配置过免密，直接测试
+            if pwd.isEmpty {
+                let ok = self.sshMacMiniSyncWithAddress(addr, "echo ok")
+                DispatchQueue.main.async {
+                    if ok {
+                        self.saveMacMiniSSH(addr)
+                        self.simpleAlert("连接成功", "已保存 SSH 地址，协调功能已启用。")
+                    } else {
+                        self.simpleAlert("连接失败", "免密连接未通过。请输入 Mac Mini 登录密码以配置免密登录。")
+                    }
+                }
+                return
+            }
+
+            // 用密码写入公钥
+            let setupOk = self.setupSSHAuth(address: addr, password: pwd, pubKey: pubKey)
+            DispatchQueue.main.async {
+                if setupOk {
+                    let testOk = self.sshMacMiniSyncWithAddress(addr, "echo ok")
+                    if testOk {
+                        self.saveMacMiniSSH(addr)
+                        self.simpleAlert("配置成功", "SSH 免密登录已配置并测试通过。\n协调功能已启用。")
+                    } else {
+                        let retry = NSAlert()
+                        retry.messageText = "公钥已写入，但免密测试未通过"
+                        retry.informativeText = "已尝试写入公钥，但免密连接测试失败。\n可能原因：Mac Mini 的 ~/.ssh 权限不对，或 SSH 配置禁用了公钥认证。\n\n是否仍要保存地址？"
+                        retry.addButton(withTitle: "仍要保存")
+                        retry.addButton(withTitle: "取消")
+                        if retry.runModal() == .alertFirstButtonReturn {
+                            self.saveMacMiniSSH(addr)
+                        }
+                    }
+                } else {
+                    self.simpleAlert("配置失败", "无法连接到 \(self.maskedAddress(addr))。\n请确认：\n1. Mac Mini 已开启远程登录\n2. 用户名和密码正确\n3. 两台 Mac 在同一局域网")
+                }
+            }
+        }
+    }
+
+    // 开关状态变化 → 更新输入框和保存按钮
+    @objc func sshToggleChanged(_ sender: NSSwitch) {
+        updateSSHUI()
+    }
+
+    // 输入框内容变化 → 更新保存按钮
+    func controlTextDidChange(_ obj: Notification) {
+        updateSSHUI()
+    }
+
+    // 根据开关状态和地址内容更新 UI 可用性
+    private func updateSSHUI() {
+        guard let alert = sshAlert, let toggle = sshToggle,
+              let addr = sshAddrField, let pwd = sshPwdField else { return }
+        let on = toggle.state == .on
+        addr.isEnabled = on
+        pwd.isEnabled = on
+        let hasAddr = !addr.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // 保存按钮：开关开 且 地址非空 才亮起；开关关时也可点击（用于关闭协调）
+        alert.buttons[0].isEnabled = !on || (on && hasAddr)
+    }
+
+    // 确保本机有 SSH key（ed25519），返回公钥内容
+    private func ensureSSHKey() -> String? {
+        let sshDir = "\(NSHomeDirectory())/.ssh"
+        let keyPath = "\(sshDir)/id_ed25519"
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: keyPath) {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+            task.arguments = ["-t", "ed25519", "-f", keyPath, "-N", "", "-q"]
+            task.standardOutput = Pipe()
+            task.standardError = Pipe()
+            do { try task.run() } catch { return nil }
+            task.waitUntilExit()
+            guard task.terminationStatus == 0 else { return nil }
+        }
+        let pubPath = keyPath + ".pub"
+        return try? String(contentsOfFile: pubPath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // 用密码方式 SSH 到 Mac Mini，写入公钥实现免密登录
+    private func setupSSHAuth(address: String, password: String, pubKey: String) -> Bool {
+        // 创建临时 askpass 脚本（通过环境变量传密码，避免 shell 转义问题）
+        let askpassPath = "/tmp/mss_askpass_\(UUID().uuidString).sh"
+        let script = "#!/bin/sh\necho \"$MSS_SSH_PASSWORD\"\n"
+        do {
+            try script.write(toFile: askpassPath, atomically: true, encoding: .utf8)
+        } catch { return false }
+        chmod(askpassPath, 0o755)
+        defer { try? FileManager.default.removeItem(atPath: askpassPath) }
+
+        // 公钥用 base64 编码，避免特殊字符和引号问题
+        guard let pubKeyData = pubKey.data(using: .utf8) else { return false }
+        let pubKeyB64 = pubKeyData.base64EncodedString()
+        let remoteCmd = "mkdir -p ~/.ssh && echo '\(pubKeyB64)' | base64 -d >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && echo OK"
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        task.arguments = ["-o", "StrictHostKeyChecking=no",
+                          "-o", "PreferredAuthentications=password",
+                          "-o", "PubkeyAuthentication=no",
+                          "-o", "NumberOfPasswordPrompts=1",
+                          "-o", "ConnectTimeout=10",
+                          address, remoteCmd]
+        var env = ProcessInfo.processInfo.environment
+        env["SSH_ASKPASS"] = askpassPath
+        env["SSH_ASKPASS_REQUIRE"] = "force"
+        env["DISPLAY"] = ":0"
+        env["MSS_SSH_PASSWORD"] = password
+        task.environment = env
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    // 用指定地址执行 SSH（免密模式，用于测试）
+    private func sshMacMiniSyncWithAddress(_ address: String, _ command: String) -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        task.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", address, command]
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do { try task.run() } catch { return false }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    // 保存 MacMiniSSH 到 config.plist
+    private func saveMacMiniSSH(_ address: String) {
+        guard let path = Bundle.main.path(forResource: "config", ofType: "plist"),
+              var dict = NSDictionary(contentsOfFile: path) as? [String: String] else { return }
+        dict["MacMiniSSH"] = address
+        (dict as NSDictionary).write(toFile: path, atomically: true)
+    }
+
+    // 脱敏显示 SSH 地址：user@192.168.1.100 -> u***@192.168.1.***
+    private func maskedAddress(_ address: String) -> String {
+        let parts = address.split(separator: "@", maxSplits: 1)
+        guard parts.count == 2 else { return "***" }
+        let user = parts[0]
+        let host = parts[1]
+        let maskedUser = user.prefix(1) + "***"
+        let hostParts = host.split(separator: ".")
+        let maskedHost: String
+        if hostParts.count == 4 {
+            maskedHost = "\(hostParts[0]).\(hostParts[1]).\(hostParts[2]).***"
+        } else {
+            maskedHost = "***"
+        }
+        return "\(maskedUser)@\(maskedHost)"
     }
 
     // 交互式重新检测向导（产品化：应用自动切代码、问用户屏幕显示什么、自动保存）
