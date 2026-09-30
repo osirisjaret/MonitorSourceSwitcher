@@ -15,6 +15,8 @@ struct AppConfig {
     let typecReadCode: String  // TypeC 状态读回码
     let hdmiReadCode: String   // HDMI 状态读回码
     let m1ddcPath: String
+    let macMiniSSH: String     // Mac Mini SSH 地址（如 user@192.168.x.x），空则不启用协调
+    let wakeDuration: Int      // 唤醒 Mac Mini 后保持显示输出的秒数
 
     static func load() -> AppConfig {
         let def = AppConfig(
@@ -23,7 +25,9 @@ struct AppConfig {
             hdmiSetCode: "16",
             typecReadCode: "15",
             hdmiReadCode: "17",
-            m1ddcPath: "/opt/homebrew/bin/m1ddc"
+            m1ddcPath: "/opt/homebrew/bin/m1ddc",
+            macMiniSSH: "",
+            wakeDuration: 30
         )
         guard let path = Bundle.main.path(forResource: "config", ofType: "plist"),
               let dict = NSDictionary(contentsOfFile: path) as? [String: String] else {
@@ -35,7 +39,9 @@ struct AppConfig {
             hdmiSetCode: dict["HdmiSetCode"] ?? def.hdmiSetCode,
             typecReadCode: dict["TypeCReadCode"] ?? def.typecReadCode,
             hdmiReadCode: dict["HdmiReadCode"] ?? def.hdmiReadCode,
-            m1ddcPath: dict["M1ddcPath"] ?? def.m1ddcPath
+            m1ddcPath: dict["M1ddcPath"] ?? def.m1ddcPath,
+            macMiniSSH: dict["MacMiniSSH"] ?? def.macMiniSSH,
+            wakeDuration: Int(dict["WakeDuration"] ?? "30") ?? def.wakeDuration
         )
     }
 }
@@ -83,6 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTimer = Timer.scheduledTimer(timeInterval: 5.0, target: self,
                                          selector: #selector(refreshIcon), userInfo: nil, repeats: true)
         RunLoop.main.add(pollTimer!, forMode: .common)
+
+        // 监听 MacBook 显示器睡眠 → 通知 Mac Mini 也睡显示器，防止显示器自动切到 HDMI
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sshMacMiniAsync("pmset displaysleepnow")
+        }
     }
 
     // 点击处理
@@ -118,6 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // 当前 TypeC/其它 -> 切 HDMI（用 hdmiSetCode=16 才能停住）
                 target = self.cfg.hdmiSetCode
                 targetRead = self.cfg.hdmiReadCode
+            }
+            // 切到 HDMI 前，先唤醒 Mac Mini 的显示输出（解决问题1：Mac Mini 睡了切不过去）
+            if target == self.cfg.hdmiSetCode {
+                _ = self.sshMacMiniSync("caffeinate -u -t \(self.cfg.wakeDuration)")
+                Thread.sleep(forTimeInterval: 0.5)  // 给 Mac Mini 一点时间恢复视频输出
             }
             self.setInput(target)
             Thread.sleep(forTimeInterval: 2.0)
@@ -182,6 +199,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         task.standardError = Pipe()
         do { try task.run() } catch { return }
         task.waitUntilExit()
+    }
+
+    // 通过 SSH 在 Mac Mini 上执行命令（同步，阻塞调用线程）
+    // 用于切换到 HDMI 前唤醒 Mac Mini 显示输出
+    private func sshMacMiniSync(_ command: String) -> Bool {
+        guard !cfg.macMiniSSH.isEmpty else { return false }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        task.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                          cfg.macMiniSSH, command]
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do { try task.run() } catch { return false }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    // SSH 异步执行（不阻塞，用于显示器睡眠通知时的快速响应）
+    private func sshMacMiniAsync(_ command: String) {
+        guard !cfg.macMiniSSH.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = self?.sshMacMiniSync(command)
+        }
     }
 
     // 刷新图标（force 时强制更新，用于切换后）
@@ -393,7 +433,9 @@ HDMI(Mac Mini): 切换码 \(hdmiSet)，读回码 \(hdmiRead)
             "HdmiSetCode": hdmiSet,
             "TypeCReadCode": typecRead,
             "HdmiReadCode": hdmiRead,
-            "M1ddcPath": cfg.m1ddcPath
+            "M1ddcPath": cfg.m1ddcPath,
+            "MacMiniSSH": cfg.macMiniSSH,
+            "WakeDuration": String(cfg.wakeDuration)
         ]
         if let path = Bundle.main.path(forResource: "config", ofType: "plist") {
             (dict as NSDictionary).write(toFile: path, atomically: true)

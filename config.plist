@@ -14,5 +14,9 @@
     <string>17</string>
     <key>M1ddcPath</key>
     <string>/opt/homebrew/bin/m1ddc</string>
+    <key>MacMiniSSH</key>
+    <string></string>
+    <key>WakeDuration</key>
+    <string>30</string>
 </dict>
 </plist>

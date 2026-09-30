@@ -12,6 +12,9 @@ By Jaret
 - 右键菜单：切换信源 / 检测显示器信息（交互向导）/ 关于 / 退出
 - 换电脑/换显示器时，右键"检测显示器信息"走向导，自动测试代码并保存配置
 - 自定义图标：替换 Resources 下的 typec.png / hdmi.png / AppIcon.icns
+- **Mac Mini 状态协调（SSH）**：
+  - 切到 HDMI 前自动唤醒 Mac Mini 显示输出（解决 Mac Mini 休眠后切不过去）
+  - MacBook 显示器休眠时自动让 Mac Mini 也休眠显示器（防止显示器自动切到 Mac Mini）
 
 ## 依赖
 
@@ -51,8 +54,30 @@ cp icons/typec.png icons/hdmi.png "$APP/Contents/Resources/" 2>/dev/null
 | TypeCReadCode | TypeC 状态读回码 |
 | HdmiReadCode | HDMI 状态读回码 |
 | M1ddcPath | m1ddc 可执行文件路径 |
+| MacMiniSSH | Mac Mini SSH 地址（如 `user@192.168.x.x`），留空则不启用协调 |
+| WakeDuration | 唤醒 Mac Mini 后保持显示输出的秒数（默认 30） |
 
 > 注意：部分显示器的切换命令码和读回码不同（如本例切到 HDMI 用 set 16，读回是 17）。请用"检测显示器信息"向导实测确认。
+
+## Mac Mini SSH 协调设置（可选）
+
+启用后可解决两个联动问题：
+1. **Mac Mini 休眠后切不过去**：切到 HDMI 前自动 SSH 唤醒 Mac Mini 显示输出
+2. **MacBook 休眠后显示器自动跳 Mac Mini**：MacBook 显示器休眠时自动 SSH 让 Mac Mini 也休眠显示器
+
+**前置条件**：
+- Mac Mini 开启「系统设置 → 通用 → 共享 → 远程登录」
+- MacBook 与 Mac Mini 在同一局域网
+- 配置 SSH 免密登录：
+  ```bash
+  # MacBook 上生成密钥（如已有可跳过）
+  ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+  # 把公钥加到 Mac Mini
+  ssh-copy-id user@192.168.x.x
+  # 或手动在 Mac Mini 上执行：
+  mkdir -p ~/.ssh && echo "<公钥内容>" >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+  ```
+- 确保 Mac Mini 的 home 目录权限不是 777（SSH 安全要求）：`chmod 755 ~`
 
 ## License
 
