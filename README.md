@@ -55,7 +55,6 @@ cp icons/typec.png icons/hdmi.png "$APP/Contents/Resources/" 2>/dev/null
 | HdmiReadCode | HDMI 状态读回码 |
 | M1ddcPath | m1ddc 可执行文件路径 |
 | MacMiniSSH | Mac Mini SSH 地址（如 `user@192.168.x.x`），留空则不启用协调 |
-| WakeDuration | 唤醒 Mac Mini 后保持显示输出的秒数（默认 30） |
 
 > 注意：部分显示器的切换命令码和读回码不同（如本例切到 HDMI 用 set 16，读回是 17）。请用"检测显示器信息"向导实测确认。
 
